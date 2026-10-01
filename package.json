@@ -6,6 +6,9 @@
     "dev": "next dev",
     "prebuild": "node copy_size_charts.js",
     "build": "next build",
+    "build:cloudflare": "opennextjs-cloudflare build",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "preview:cloudflare": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "start": "next start",
     "lint": "next lint"
   },
@@ -27,6 +30,8 @@
     "tailwind-merge": "^2.5.0"
   },
   "devDependencies": {
+    "@opennextjs/cloudflare": "^1.0.0",
+    "wrangler": "^4.0.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
