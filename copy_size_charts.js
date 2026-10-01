@@ -11,17 +11,21 @@ const botAvatarDestDir = path.join(__dirname, 'public', 'images');
 const botAvatarDest = path.join(botAvatarDestDir, 'bot-avatar.png');
 
 try {
-  fs.copyFileSync(src1, dest1);
-  console.log('Successfully copied size-chart-tshirt.png');
+  if (fs.existsSync(src1)) {
+    fs.copyFileSync(src1, dest1);
+    console.log('Successfully copied size-chart-tshirt.png');
+  }
 } catch (err) {
-  console.error('Error copying tshirt size chart:', err);
+  console.warn('Notice: size-chart-tshirt.png skipped:', err.message);
 }
 
 try {
-  fs.copyFileSync(src2, dest2);
-  console.log('Successfully copied size-chart-pants.png');
+  if (fs.existsSync(src2)) {
+    fs.copyFileSync(src2, dest2);
+    console.log('Successfully copied size-chart-pants.png');
+  }
 } catch (err) {
-  console.error('Error copying pants size chart:', err);
+  console.warn('Notice: size-chart-pants.png skipped:', err.message);
 }
 
 try {

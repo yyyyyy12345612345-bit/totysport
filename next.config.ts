@@ -4,6 +4,7 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   compress: true,
+  serverExternalPackages: ["jose", "jwks-rsa", "firebase-admin"],
   images: {
     unoptimized: true,
     qualities: [75, 85, 90, 95],
