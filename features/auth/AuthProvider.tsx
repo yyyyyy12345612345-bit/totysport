@@ -46,19 +46,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
     window.addEventListener("toty_auth_change", handleAuthChange);
 
-    // 3. Listen to standard Firebase Auth state
-    const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
-      if (fbUser) {
-        setUser(fbUser);
-      } else if (!hasLocal) {
-        checkLocalSession();
-      }
+    // 3. Listen to standard Firebase Auth state (only if auth is initialized)
+    let unsubscribe: (() => void) | undefined;
+    if (auth) {
+      unsubscribe = onAuthStateChanged(auth, (fbUser) => {
+        if (fbUser) {
+          setUser(fbUser);
+        } else if (!hasLocal) {
+          checkLocalSession();
+        }
+        setLoading(false);
+      });
+    } else {
+      // Firebase not configured — resolve loading state from local session only
       setLoading(false);
-    });
+    }
 
     return () => {
       window.removeEventListener("toty_auth_change", handleAuthChange);
-      unsubscribe();
+      unsubscribe?.();
     };
   }, []);
 
