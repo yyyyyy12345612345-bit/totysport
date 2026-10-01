@@ -5,8 +5,7 @@ import { getStorage } from "firebase/storage";
 
 export const isFirebaseConfigured = Boolean(
   process.env.NEXT_PUBLIC_FIREBASE_API_KEY &&
-  process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID &&
-  !process.env.NEXT_PUBLIC_FIREBASE_API_KEY.includes("YOUR_")
+  process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID
 );
 
 const firebaseConfig = {
@@ -19,13 +18,13 @@ const firebaseConfig = {
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || "",
 };
 
-// Initialize safely — empty strings won't crash Cloudflare Workers (unlike fake placeholder keys)
 let app: FirebaseApp;
 try {
   app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 } catch (e) {
-  console.warn("[Firebase] App init failed:", e);
-  app = initializeApp({ apiKey: "", projectId: "", appId: "" }, "fallback");
+  console.warn("[Firebase] init error:", e);
+  // Fallback to prevent crash
+  app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig, "backup");
 }
 
 export const auth = getAuth(app);
@@ -44,3 +43,4 @@ export const db = dbInstance;
 export const storage = getStorage(app);
 
 export default app;
+
