@@ -18,38 +18,40 @@ const firebaseConfig = {
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || "",
 };
 
-// All initialization wrapped in try/catch — prevents build-time crashes
-// when API key is invalid/dummy. Firebase validates keys synchronously.
-let app: FirebaseApp | null = null;
-let auth: Auth | null = null;
-let db: Firestore | null = null;
-let storage: FirebaseStorage | null = null;
+// Internal nullable instances
+let _app: FirebaseApp | null = null;
+let _auth: Auth | null = null;
+let _db: Firestore | null = null;
+let _storage: FirebaseStorage | null = null;
 
 try {
-  app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-
-  try { auth = getAuth(app); } catch (e) {
-    console.warn("[Firebase] Auth init skipped:", (e as Error).message);
-  }
-
-  try {
-    db = initializeFirestore(app, {
-      experimentalForceLongPolling: true,
-      ignoreUndefinedProperties: true,
-    });
-  } catch {
-    try { db = getFirestore(app); } catch (e) {
-      console.warn("[Firebase] Firestore init skipped:", (e as Error).message);
-    }
-  }
-
-  try { storage = getStorage(app); } catch (e) {
-    console.warn("[Firebase] Storage init skipped:", (e as Error).message);
-  }
-
+  _app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 } catch (e) {
   console.warn("[Firebase] App init skipped:", (e as Error).message);
 }
 
-export { auth, db, storage };
-export default app;
+if (_app) {
+  try { _auth = getAuth(_app); } catch (e) {
+    console.warn("[Firebase] Auth init skipped:", (e as Error).message);
+  }
+  try {
+    _db = initializeFirestore(_app, {
+      experimentalForceLongPolling: true,
+      ignoreUndefinedProperties: true,
+    });
+  } catch {
+    try { _db = getFirestore(_app); } catch {}
+  }
+  try { _storage = getStorage(_app); } catch {}
+}
+
+// Export with type assertions so the rest of the codebase doesn't need null checks.
+// If Firebase fails to init, runtime calls will throw meaningful errors.
+// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+export const auth = _auth as Auth;
+// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+export const db = _db as Firestore;
+// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+export const storage = _storage as FirebaseStorage;
+
+export default _app;
