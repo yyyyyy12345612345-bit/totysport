@@ -1,13 +1,12 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
-import { getAuth, Auth } from "firebase/auth";
-import { initializeFirestore, getFirestore, Firestore } from "firebase/firestore";
-import { getStorage, FirebaseStorage } from "firebase/storage";
+import { getAuth } from "firebase/auth";
+import { initializeFirestore, getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
 export const isFirebaseConfigured = Boolean(
   process.env.NEXT_PUBLIC_FIREBASE_API_KEY &&
   process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID &&
-  !process.env.NEXT_PUBLIC_FIREBASE_API_KEY.includes("YOUR_") &&
-  !process.env.NEXT_PUBLIC_FIREBASE_API_KEY.includes("placeholder")
+  !process.env.NEXT_PUBLIC_FIREBASE_API_KEY.includes("YOUR_")
 );
 
 const firebaseConfig = {
@@ -20,31 +19,28 @@ const firebaseConfig = {
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || "",
 };
 
-// Only initialize Firebase if real credentials exist — avoids crashes on Cloudflare Workers
-let app: FirebaseApp | null = null;
-let auth: Auth | null = null;
-let db: Firestore | null = null;
-let storage: FirebaseStorage | null = null;
-
-if (isFirebaseConfigured) {
-  try {
-    app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-    auth = getAuth(app);
-
-    try {
-      db = initializeFirestore(app, {
-        experimentalForceLongPolling: true,
-        ignoreUndefinedProperties: true,
-      });
-    } catch {
-      db = getFirestore(app);
-    }
-
-    storage = getStorage(app);
-  } catch (e) {
-    console.warn("[Firebase] Initialization failed:", e);
-  }
+// Initialize safely — empty strings won't crash Cloudflare Workers (unlike fake placeholder keys)
+let app: FirebaseApp;
+try {
+  app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+} catch (e) {
+  console.warn("[Firebase] App init failed:", e);
+  app = initializeApp({ apiKey: "", projectId: "", appId: "" }, "fallback");
 }
 
-export { app, auth, db, storage };
+export const auth = getAuth(app);
+
+let dbInstance;
+try {
+  dbInstance = initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+    ignoreUndefinedProperties: true,
+  });
+} catch {
+  dbInstance = getFirestore(app);
+}
+
+export const db = dbInstance;
+export const storage = getStorage(app);
+
 export default app;
