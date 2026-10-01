@@ -1,0 +1,648 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import Image from "next/image";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
+import {
+  MapPin,
+  Truck,
+  Banknote,
+  Smartphone,
+  CreditCard,
+  ShieldCheck,
+  CheckCircle2,
+  ChevronRight,
+  ArrowRight,
+  Copy,
+  Check,
+  Gift,
+} from "lucide-react";
+import { useCart } from "@/features/cart/CartProvider";
+import { useBundleDiscount } from "@/hooks/useBundleDiscount";
+import { useSiteSettings } from "@/features/settings/SiteSettingsProvider";
+import { useLanguage } from "@/features/language/LanguageProvider";
+import { createOrder, getShippingRates, validateStockAvailability } from "@/lib/firebase/firestore";
+import { formatPrice } from "@/lib/utils";
+import { checkoutSchema, type CheckoutFormData } from "@/lib/validations/checkout.schema";
+import { Input } from "@/components/ui/Input";
+import { Spinner } from "@/components/ui/Spinner";
+import type { PaymentMethod, OrderItem, CreateOrderInput } from "@/types/order";
+import { TruckSubmitButton } from "@/components/checkout/TruckSubmitButton";
+import type { GovernorateRate } from "@/constants/governorates";
+import * as gtag from "@/lib/analytics/gtag";
+
+type PaymentCategory = "cash" | "online";
+type OnlineMethod = "vodafone_cash" | "instapay";
+
+export default function CheckoutPage() {
+  const router = useRouter();
+  const { items, totalPrice, clearCart, isHydrated } = useCart();
+  const { settings: siteSettings } = useSiteSettings();
+  const { totalDiscount, bundleEnabled } = useBundleDiscount();
+  const { language, isRTL, t } = useLanguage();
+  const isAr = language === "ar";
+
+  const [submitting, setSubmitting] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [isRedirecting, setIsRedirecting] = useState(false);
+
+  // Payment state
+  const [paymentCategory, setPaymentCategory] = useState<PaymentCategory>("cash");
+  const [onlineMethod, setOnlineMethod] = useState<OnlineMethod>("vodafone_cash");
+
+  // Shipping & settings
+  const [shippingRates, setShippingRates] = useState<GovernorateRate[]>([]);
+
+  // Derived real-time settings values
+  const vodafoneNumber = siteSettings?.vodafoneCash?.trim() || "";
+  const instapayUsername = siteSettings?.instapayUsername?.trim() || "@toty_sport22";
+  const onlinePaymentEnabled = siteSettings?.onlinePaymentEnabled !== false;
+  const vodafoneCashEnabled = siteSettings?.vodafoneCashEnabled !== false;
+  const instapayEnabled = siteSettings?.instapayEnabled !== false;
+  const [orderSuccess, setOrderSuccess] = useState(false);
+  const [copiedOnline, setCopiedOnline] = useState(false);
+
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    watch,
+    formState: { errors },
+  } = useForm<CheckoutFormData>({
+    resolver: zodResolver(checkoutSchema),
+    defaultValues: { paymentMethod: "cash_on_delivery" },
+  });
+
+  const selectedGovernorate = watch("governorate");
+  const watchedName = watch("customerName");
+  const watchedPhone = watch("phone");
+  const watchedCity = watch("city");
+  const watchedAddress = watch("address");
+  const watchedTransferPhone = watch("transferPhone");
+
+  const isEgyptianPhone = (val?: string) =>
+    !!val && /^(\+20|0)?1[0-2,5]{1}[0-9]{8}$/.test(val.trim());
+
+  const isFormValid =
+    !!watchedName &&
+    watchedName.trim().length >= 2 &&
+    isEgyptianPhone(watchedPhone) &&
+    !!selectedGovernorate &&
+    !!watchedCity &&
+    watchedCity.trim().length >= 2 &&
+    !!watchedAddress &&
+    watchedAddress.trim().length >= 8 &&
+    (paymentCategory === "cash" ||
+      (onlineMethod === "vodafone_cash"
+        ? isEgyptianPhone(watchedTransferPhone)
+        : !!watchedTransferPhone && watchedTransferPhone.trim().length >= 2));
+
+  const handleCopyOnline = (text: string) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    setCopiedOnline(true);
+    toast.success("تم النسخ بنجاح!");
+    setTimeout(() => setCopiedOnline(false), 2000);
+  };
+
+  useEffect(() => {
+    setMounted(true);
+    // Load shipping rates
+    getShippingRates()
+      .then((data) => {
+        setShippingRates(data);
+        if (data.length > 0) {
+          const def = data.find((r) => r.active) || data[0];
+          setValue("governorate", def.nameAr);
+        }
+      })
+      .catch((err) => {
+        console.error("Error loading shipping rates:", err);
+      });
+  }, [setValue]);
+
+  // Guard: redirect empty cart
+  useEffect(() => {
+    if (isHydrated && items.length === 0 && !orderSuccess) {
+      router.replace("/");
+    }
+  }, [isHydrated, items.length, orderSuccess, router]);
+
+  // GA4: begin_checkout — fire once when page is ready with cart items
+  useEffect(() => {
+    if (!isHydrated || items.length === 0) return;
+    const ga4Items: gtag.GA4Item[] = items.map((item) => ({
+      item_id: item.product.id,
+      item_name: item.product.name,
+      item_category: item.product.category || "ملابس",
+      item_variant: `${item.selectedSize || "قياسي"} / ${item.selectedColor?.name || "افتراضي"}`,
+      price: item.product.salePrice ?? item.product.price ?? 0,
+      quantity: item.quantity,
+    }));
+    gtag.beginCheckout(ga4Items, totalPrice);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHydrated]);
+
+  // Sync paymentMethod field with category/method state
+  useEffect(() => {
+    if (paymentCategory === "cash") {
+      setValue("paymentMethod", "cash_on_delivery");
+    } else {
+      setValue("paymentMethod", onlineMethod);
+    }
+  }, [paymentCategory, onlineMethod, setValue]);
+
+  const activeRateObj = shippingRates.find(
+    (r) => r.nameAr === selectedGovernorate || r.nameEn === selectedGovernorate
+  );
+  const currentShippingCost = activeRateObj?.price ?? 50;
+  const appliedBundleDiscount = bundleEnabled ? totalDiscount : 0;
+  const finalOrderTotal = totalPrice - appliedBundleDiscount + currentShippingCost;
+  const onlineNumberDisplay =
+    onlineMethod === "vodafone_cash" ? vodafoneNumber : instapayUsername;
+
+  if (!mounted || !isHydrated || items.length === 0 || isRedirecting) {
+    return (
+      <div className="pt-20 min-h-screen flex items-center justify-center">
+        <Spinner size="lg" />
+      </div>
+    );
+  }
+
+  const onSubmit = async (data: CheckoutFormData) => {
+    setSubmitting(true);
+    try {
+      const orderItems: OrderItem[] = items.map((item) => ({
+        productId: item.product.id,
+        productName: item.product.name,
+        productImage: item.selectedColor.image || item.product.mainImage || "",
+        price: item.product.salePrice ?? item.product.price,
+        quantity: item.quantity,
+        selectedSize: item.selectedSize,
+        selectedColor: item.selectedColor,
+      }));
+
+      // Check stock availability live before placing order
+      const stockCheck = await validateStockAvailability(orderItems);
+      if (!stockCheck.valid) {
+        const issue = stockCheck.issues[0];
+        if (issue) {
+          toast.error(
+            `عذراً، الكمية المطلوبة غير متوفرة حالياً لـ (${issue.productName} - ${issue.color} - ${issue.size}). المتبقي: ${issue.available} قطعة.`
+          );
+        } else {
+          toast.error("عذراً، بعض المنتجات في سلتك غير متوفرة بالكميات المطلوبة.");
+        }
+        setSubmitting(false);
+        return;
+      }
+
+      const orderPayload: CreateOrderInput = {
+        customerName: data.customerName.trim(),
+        phone: data.phone.trim(),
+        secondaryPhone: data.secondaryPhone.trim(),
+        whatsappPhone: data.whatsappPhone?.trim() || data.phone.trim(),
+        governorate: data.governorate.trim(),
+        city: data.city.trim(),
+        address: data.address.trim(),
+        notes: data.notes?.trim() || "",
+        paymentMethod: data.paymentMethod as PaymentMethod,
+        items: orderItems,
+        subtotal: totalPrice,
+        shippingCost: currentShippingCost,
+        bundleDiscount: appliedBundleDiscount > 0 ? appliedBundleDiscount : undefined,
+        total: finalOrderTotal,
+      };
+
+      if (data.transferPhone?.trim()) {
+        orderPayload.transferPhone = data.transferPhone.trim();
+      }
+
+      const orderId = await createOrder(orderPayload);
+
+      // GA4: purchase
+      gtag.purchase({
+        transaction_id: orderId,
+        value: finalOrderTotal,
+        shipping: currentShippingCost,
+        items: orderItems.map((oi) => ({
+          item_id: oi.productId,
+          item_name: oi.productName,
+          item_variant: `${oi.selectedSize || "قياسي"} / ${oi.selectedColor?.name || "افتراضي"}`,
+          price: oi.price,
+          quantity: oi.quantity,
+        })),
+      });
+
+      setOrderSuccess(true);
+      setIsRedirecting(true);
+      clearCart();
+      setTimeout(() => {
+        router.push(`/order-success?orderId=${orderId}`);
+      }, 1500);
+    } catch (err) {
+      console.error(err);
+      toast.error("حدث خطأ — حاول مرة أخرى");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="pt-20 min-h-screen font-sans" dir={isRTL ? "rtl" : "ltr"}>
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        {/* Header Section */}
+        <div className="mb-8">
+            <Link
+              href="/#products"
+              className="inline-flex items-center gap-2 text-xs sm:text-sm font-bold text-zinc-600 dark:text-zinc-300 hover:text-black dark:hover:text-white transition-all bg-gray-100 dark:bg-zinc-800/90 hover:bg-gray-200 dark:hover:bg-zinc-700 py-2 px-3.5 rounded-xl cursor-pointer mb-3 border border-gray-200/60 dark:border-zinc-700/60"
+            >
+              <ArrowRight size={16} />
+              <span>{isAr ? "رجوع للمتجر" : "Back to Store"}</span>
+            </Link>
+            <motion.h1
+              className="text-3xl font-black tracking-tight"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              {isAr ? "إتمام الطلب والشحن" : "Checkout & Shipping"}
+            </motion.h1>
+        </div>
+
+        <form onSubmit={handleSubmit(onSubmit)} noValidate>
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-10">
+            {/* ── LEFT: Form ── */}
+            <div className="lg:col-span-3 space-y-6">
+
+              {/* ── Section 1: Customer Info ── */}
+              <motion.section
+                className="bg-gray-50 dark:bg-zinc-900 rounded-2xl p-6 sm:p-8 space-y-5 border border-gray-100 dark:border-zinc-800"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.05 }}
+              >
+                <h2 className="font-bold text-lg flex items-center gap-2">
+                  <MapPin size={20} />
+                  {isAr ? "بيانات الشحن والتوصيل" : "Delivery Details"}
+                </h2>
+
+                <Input
+                  id="customerName"
+                  label={isAr ? "الاسم بالكامل *" : "Full Name *"}
+                  placeholder={isAr ? "أحمد محمد" : "Your full name"}
+                  error={errors.customerName?.message}
+                  {...register("customerName")}
+                />
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Input
+                    id="phone"
+                    label={isAr ? "رقم الهاتف الأساسي *" : "Primary Phone *"}
+                    placeholder="01012345678"
+                    error={errors.phone?.message}
+                    {...register("phone")}
+                  />
+                  <Input
+                    id="secondaryPhone"
+                    label={isAr ? "رقم هاتف إضافي (بديل) *" : "Secondary Phone (Required) *"}
+                    placeholder="01112345678"
+                    error={errors.secondaryPhone?.message}
+                    {...register("secondaryPhone")}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Input
+                    id="whatsappPhone"
+                    label={isAr ? "رقم الواتساب (اختياري)" : "WhatsApp Number (Optional)"}
+                    placeholder="01012345678"
+                    error={errors.whatsappPhone?.message}
+                    {...register("whatsappPhone")}
+                  />
+
+                  {/* Governorate */}
+                  <div>
+                    <label className="block text-xs font-bold text-gray-800 dark:text-zinc-200 uppercase tracking-wider mb-1.5">
+                      {isAr ? "المحافظة *" : "Governorate *"}
+                    </label>
+                    <select
+                      {...register("governorate")}
+                      className="w-full px-4 py-3 border border-gray-200 dark:border-zinc-700 bg-white text-gray-900 dark:bg-zinc-800/90 dark:text-zinc-100 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white cursor-pointer shadow-sm"
+                    >
+                      {shippingRates.map((rate) => (
+                        <option key={rate.id} value={rate.nameAr} className="bg-white text-gray-900 dark:bg-zinc-800 dark:text-white">
+                          {isAr ? rate.nameAr : (rate.nameEn || rate.nameAr)} — {formatPrice(rate.price)}
+                        </option>
+                      ))}
+                    </select>
+                    {errors.governorate && (
+                      <p className="text-red-500 text-xs font-bold mt-1.5">{errors.governorate.message}</p>
+                    )}
+                  </div>
+                </div>
+
+                <Input
+                  id="city"
+                  label={isAr ? "المدينة / الحي *" : "City / District *"}
+                  placeholder={isAr ? "مثال: المعادي / مدينة نصر / المهندسين" : "e.g. Maadi, Nasr City, Dokki"}
+                  error={errors.city?.message}
+                  {...register("city")}
+                />
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-800 dark:text-zinc-200 uppercase tracking-wider mb-1.5">
+                    {isAr ? "العنوان بالتفصيل *" : "Detailed Address *"}
+                  </label>
+                  <textarea
+                    className="w-full px-4 py-3 border border-gray-200 dark:border-zinc-700 bg-white text-gray-900 placeholder:text-gray-400 dark:bg-zinc-800/90 dark:text-zinc-100 dark:placeholder:text-zinc-400 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white resize-none shadow-sm"
+                    rows={3}
+                    placeholder={isAr ? "الشارع، رقم العمارة، الدور، رقم الشقة..." : "Street name, building no., floor, apartment no."}
+                    {...register("address")}
+                  />
+                  {errors.address && (
+                    <p className="text-red-500 text-xs font-bold mt-1.5">{errors.address.message}</p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-800 dark:text-zinc-200 uppercase tracking-wider mb-1.5">
+                    {isAr ? "ملاحظات للتوصيل (اختياري)" : "Delivery Notes (Optional)"}
+                  </label>
+                  <textarea
+                    className="w-full px-4 py-3 border border-gray-200 dark:border-zinc-700 bg-white text-gray-900 placeholder:text-gray-400 dark:bg-zinc-800/90 dark:text-zinc-100 dark:placeholder:text-zinc-400 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white resize-none shadow-sm"
+                    rows={2}
+                    placeholder={isAr ? "أي تعليمات لمندوب الشحن..." : "Any special delivery instructions..."}
+                    {...register("notes")}
+                  />
+                </div>
+              </motion.section>
+
+              {/* ── Section 2: Payment Method ── */}
+              <motion.section
+                className="bg-gray-50 dark:bg-zinc-900 rounded-2xl p-6 sm:p-8 border border-gray-100 dark:border-zinc-800 space-y-5"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.12 }}
+              >
+                <h2 className="font-bold text-lg flex items-center gap-2">
+                  💳 {isAr ? "طريقة الدفع" : "Payment Method"}
+                </h2>
+
+                {/* Category: Cash or Online */}
+                <div className={`grid ${onlinePaymentEnabled ? "grid-cols-2" : "grid-cols-1"} gap-3`}>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentCategory("cash")}
+                    className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all cursor-pointer ${
+                      paymentCategory === "cash"
+                        ? "border-black dark:border-white bg-black text-white dark:bg-white dark:text-black shadow-lg"
+                        : "border-gray-200 dark:border-zinc-700 hover:border-gray-400 bg-white dark:bg-zinc-800"
+                    }`}
+                  >
+                    <Banknote size={22} />
+                    <span className="text-xs font-black">{isAr ? "الدفع عند الاستلام (COD)" : "Cash on Delivery (COD)"}</span>
+                  </button>
+
+                  {onlinePaymentEnabled && (
+                    <button
+                      type="button"
+                      onClick={() => setPaymentCategory("online")}
+                      className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all cursor-pointer ${
+                        paymentCategory === "online"
+                          ? "border-black dark:border-white bg-black text-white dark:bg-white dark:text-black shadow-lg"
+                          : "border-gray-200 dark:border-zinc-700 hover:border-gray-400 bg-white dark:bg-zinc-800"
+                      }`}
+                    >
+                      <CreditCard size={22} />
+                      <span className="text-xs font-black">{isAr ? "دفع إلكتروني (فودافون كاش / انستاباي)" : "Online Payment (VF / InstaPay)"}</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Cash confirmation */}
+                <AnimatePresence mode="wait">
+                  {paymentCategory === "cash" && (
+                    <motion.div
+                      key="cash"
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="flex items-center gap-3 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-xl p-4">
+                        <CheckCircle2 size={20} className="text-green-600 flex-shrink-0" />
+                        <p className="text-xs font-semibold text-green-800 dark:text-green-300">
+                          {isAr
+                            ? "سيتم الدفع نقداً عند استلام ومعاينة التيشرت مع المندوب."
+                            : "Pay in cash upon inspecting your jersey with the courier."}
+                        </p>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {/* Online payment sub-options */}
+                  {paymentCategory === "online" && (
+                    <motion.div
+                      key="online"
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden space-y-4"
+                    >
+                      {/* Vodafone / InstaPay choice */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {vodafoneCashEnabled && (
+                          <button
+                            type="button"
+                            onClick={() => setOnlineMethod("vodafone_cash")}
+                            className={`flex items-center gap-3 p-3.5 rounded-xl border-2 transition-all ${
+                              onlineMethod === "vodafone_cash"
+                                ? "border-red-500 bg-red-50 dark:bg-red-950/30"
+                                : "border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800"
+                            }`}
+                          >
+                            <Smartphone size={18} className={onlineMethod === "vodafone_cash" ? "text-red-500" : ""} />
+                            <div className="text-right">
+                              <p className="text-xs font-black">فودافون كاش</p>
+                              <p className="text-[10px] text-gray-500 font-mono">{vodafoneNumber || "غير مدخل بالأدمن"}</p>
+                            </div>
+                          </button>
+                        )}
+
+                        {instapayEnabled && (
+                          <button
+                            type="button"
+                            onClick={() => setOnlineMethod("instapay")}
+                            className={`flex items-center gap-3 p-3.5 rounded-xl border-2 transition-all ${
+                              onlineMethod === "instapay"
+                                ? "border-purple-500 bg-purple-50 dark:bg-purple-950/30"
+                                : "border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800"
+                            }`}
+                          >
+                            <CreditCard size={18} className={onlineMethod === "instapay" ? "text-purple-500" : ""} />
+                            <div className="text-right">
+                              <p className="text-xs font-black">انستاباي</p>
+                              <p className="text-[10px] text-gray-500 font-mono">{instapayUsername}</p>
+                            </div>
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Transfer instructions */}
+                      <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl p-4 space-y-2">
+                        <p className="text-xs font-black text-amber-900 dark:text-amber-300 flex items-center gap-1.5">
+                          <ChevronRight size={14} />
+                          خطوات الدفع عبر {onlineMethod === "instapay" ? "انستاباي (InstaPay)" : "فودافون كاش"}:
+                        </p>
+                        <ol className="text-xs text-amber-800 dark:text-amber-400 space-y-2 list-decimal list-inside font-medium">
+                          <li>
+                            حوّل المبلغ (<span className="font-bold font-mono">{formatPrice(finalOrderTotal)}</span>) على {onlineMethod === "instapay" ? "حساب / يوزر انستاباي:" : "رقم فودافون كاش:"}
+                            <div className="inline-flex items-center gap-2 mt-1 mr-2 bg-white dark:bg-zinc-900 px-3 py-1.5 rounded-lg border border-amber-300 dark:border-amber-700">
+                              <span className="font-black font-mono text-zinc-900 dark:text-white select-all">
+                                {onlineNumberDisplay}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleCopyOnline(onlineNumberDisplay)}
+                                className="text-[11px] font-bold text-purple-600 dark:text-purple-400 hover:text-purple-700 flex items-center gap-1 bg-purple-50 dark:bg-purple-950/50 px-2 py-0.5 rounded transition-all"
+                                title="نسخ"
+                              >
+                                {copiedOnline ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                                <span>{copiedOnline ? "تم النسخ" : "نسخ"}</span>
+                              </button>
+                            </div>
+                          </li>
+                          <li>
+                            {onlineMethod === "instapay"
+                              ? "اكتب اسم الحساب أو اليوزر أو الرقم اللي حوّلت منه بالأسفل للتأكيد"
+                              : "اكتب رقم فودافون كاش الذي حوّلت منه بالأسفل للتأكيد"}
+                          </li>
+                        </ol>
+                      </div>
+
+                      {/* Transfer sender input (phone for VF Cash, account/username/phone for InstaPay) */}
+                      <Input
+                        id="transferPhone"
+                        label={
+                          onlineMethod === "instapay"
+                            ? "اسم حسابك / يوزرك أو الرقم اللي حوّلت منه على انستاباي *"
+                            : "رقم فودافون كاش اللي حوّلت منه *"
+                        }
+                        placeholder={
+                          onlineMethod === "instapay"
+                            ? "مثال: ahmed@instapay أو اسم الحساب أو رقم الموبايل"
+                            : "01012345678"
+                        }
+                        error={errors.transferPhone?.message}
+                        {...register("transferPhone")}
+                      />
+
+                      {/* Admin Review Notice Card */}
+                      <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-xl p-4 flex items-start gap-3">
+                        <ShieldCheck size={20} className="text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-xs font-bold text-blue-900 dark:text-blue-200">
+                            ملاحظة هامة:
+                          </p>
+                          <p className="text-xs font-semibold text-blue-800 dark:text-blue-300 mt-0.5">
+                            سيتم مراجعة عملية التحويل والتأكد منها من قِبل الأدمن بعد إرسال الطلب.
+                          </p>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </motion.section>
+            </div>
+
+            {/* ── RIGHT: Order Summary ── */}
+            <div className="lg:col-span-2">
+              <div className="bg-gray-50 dark:bg-zinc-900 rounded-2xl p-6 sm:p-8 sticky top-24 border border-gray-100 dark:border-zinc-800 space-y-6">
+                <h2 className="font-bold text-lg">{isAr ? "ملخص الطلب" : "Order Summary"}</h2>
+
+                {/* Items */}
+                <div className="space-y-3 max-h-72 overflow-y-auto pl-1">
+                  {items.map((item, idx) => {
+                    const pId = item.product?.id || `item-${idx}`;
+                    const pSize = item.selectedSize || (isAr ? "قياسي" : "Standard");
+                    const pColorHex = item.selectedColor?.hex || "#000000";
+                    const pColorName = item.selectedColor?.name || (isAr ? "افتراضي" : "Default");
+                    const pImage = item.selectedColor?.image || item.product?.mainImage || "/placeholder.jpg";
+                    const pName = item.product?.name || "تيشرت Toty Sport";
+                    const price = item.product?.salePrice ?? item.product?.price ?? 0;
+                    const qty = item.quantity || 1;
+                    const key = `${pId}-${pSize}-${pColorHex}`;
+
+                    return (
+                      <div key={key} className="flex items-center gap-3 p-2 bg-white dark:bg-zinc-800 rounded-xl border border-gray-100 dark:border-zinc-700">
+                        <div className="w-12 h-12 rounded-lg overflow-hidden bg-gray-50 dark:bg-zinc-700 flex-shrink-0">
+                          <Image
+                            src={pImage}
+                            alt={pName}
+                            width={48}
+                            height={48}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-bold truncate">{pName}</p>
+                          <p className="text-[10px] text-gray-500">
+                            {pColorName} / {pSize} × {qty}
+                          </p>
+                        </div>
+                        <span className="text-xs font-black">{formatPrice(price * qty)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Totals */}
+                <div className="border-t border-gray-200 dark:border-zinc-700 pt-4 space-y-2.5 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">{isAr ? "المجموع الفرعي" : "Subtotal"}</span>
+                    <span className="font-bold">{formatPrice(totalPrice)}</span>
+                  </div>
+                  {appliedBundleDiscount > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1">
+                        <Gift size={13} />
+                        {isAr ? "خصم العرض" : "Bundle Discount"}
+                      </span>
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">- {formatPrice(appliedBundleDiscount)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <span className="text-gray-500 flex items-center gap-1">
+                      <Truck size={13} className="text-amber-500" />
+                      {isAr ? "الشحن" : "Shipping"} ({selectedGovernorate || "—"})
+                    </span>
+                    <span className="font-bold text-amber-600">{formatPrice(currentShippingCost)}</span>
+                  </div>
+                </div>
+
+                <div className="border-t border-gray-200 dark:border-zinc-700 pt-4 flex justify-between font-black text-lg">
+                  <span>{isAr ? "الإجمالي النهائي" : "Total"}</span>
+                  <span>{formatPrice(finalOrderTotal)}</span>
+                </div>
+
+                {/* Submit Button */}
+                <div className="pt-1">
+                  <TruckSubmitButton
+                    isSubmitting={submitting}
+                    isSuccess={orderSuccess}
+                    disabled={!isFormValid}
+                    totalText={formatPrice(finalOrderTotal)}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}

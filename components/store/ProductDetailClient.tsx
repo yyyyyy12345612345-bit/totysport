@@ -1,0 +1,708 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import Image from "next/image";
+import { useParams, useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
+import { ShoppingBag, Minus, Plus, ChevronLeft, ChevronRight, Heart, X } from "lucide-react";
+import { toast } from "sonner";
+import { subscribeToProducts, getProductById, getProductBySlug } from "@/lib/firebase/firestore";
+import * as gtag from "@/lib/analytics/gtag";
+import { useCart } from "@/features/cart/CartProvider";
+import { useWishlist } from "@/features/wishlist/WishlistProvider";
+import { useLanguage } from "@/features/language/LanguageProvider";
+import { useBundleDiscount } from "@/hooks/useBundleDiscount";
+import { formatPrice, getDiscountPercentage } from "@/lib/utils";
+import type { Product, ProductVariant } from "@/types/product";
+import { Spinner } from "@/components/ui/Spinner";
+import { Badge } from "@/components/ui/Badge";
+
+export default function ProductDetailClient({ overrideSlug, onClose }: { overrideSlug?: string; onClose?: () => void } = {}) {
+  const params = useParams();
+  const rawSlug = (params?.slug as string) || "";
+  const targetSlug = overrideSlug || rawSlug;
+  const router = useRouter();
+  const { toggleWishlist, isInWishlist, wishlist, toggleWishlistDrawer } = useWishlist();
+  const { t, language } = useLanguage();
+  const { addItem, openCart, totalItems, toggleCart } = useCart();
+  const { bundleEnabled, discountPerBundle, bundleQty } = useBundleDiscount();
+
+  const [product, setProduct] = useState<Product | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [activeImage, setActiveImage] = useState(0);
+  const [selectedSize, setSelectedSize] = useState("");
+  const [selectedColor, setSelectedColor] = useState<{ name: string; hex: string; image: string } | null>(null);
+  const [quantity, setQuantity] = useState(1);
+  const [adding, setAdding] = useState(false);
+  const [showSizeGuide, setShowSizeGuide] = useState(false);
+
+  const applyProduct = useCallback((matched: Product) => {
+    setProduct(matched);
+
+    if (typeof window !== "undefined" && matched) {
+      try {
+        sessionStorage.setItem("nxt_max_stage_product_name", matched.name);
+        sessionStorage.setItem("nxt_max_stage_product_id", matched.id);
+        const isCamp = sessionStorage.getItem("nxt_is_campaign");
+        if (isCamp && !sessionStorage.getItem("nxt_campaign_product_name")) {
+          sessionStorage.setItem("nxt_campaign_product_name", matched.name);
+          sessionStorage.setItem("nxt_campaign_product_id", matched.id);
+        }
+        window.dispatchEvent(new Event("nxt_url_changed"));
+      } catch {
+        // Silent
+      }
+    }
+
+    setSelectedColor((prev) => {
+      if (prev) {
+        const currentVar = matched.variants?.find((v) => v.colorHex === prev.hex || v.colorName === prev.name);
+        if (currentVar) {
+          return {
+            name: currentVar.colorName || "افتراضي",
+            hex: currentVar.colorHex || "#000000",
+            image: currentVar.image || matched.mainImage || "",
+          };
+        }
+      }
+      if (matched?.variants && matched.variants.length > 0 && matched.variants[0]) {
+        const firstVariant = matched.variants[0];
+        return {
+          name: firstVariant.colorName || "افتراضي",
+          hex: firstVariant.colorHex || "#000000",
+          image: firstVariant.image || matched.mainImage || "",
+        };
+      }
+      return {
+        name: "افتراضي",
+        hex: "#000000",
+        image: matched.mainImage || "",
+      };
+    });
+
+    setSelectedSize((prev) => {
+      if (prev) return prev;
+      const firstVariant = matched.variants?.[0];
+      return (
+        firstVariant?.sizes?.find((s) => s.stock > 0)?.size ||
+        firstVariant?.sizes?.[0]?.size ||
+        "قياسي"
+      );
+    });
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && !onClose) {
+      window.scrollTo({ top: 0, behavior: "instant" });
+    }
+
+    if (!targetSlug) {
+      setLoading(false);
+      return;
+    }
+
+    let isMounted = true;
+
+    // 1. Direct fast fetch by Document ID or Slug
+    const fetchDirect = async () => {
+      try {
+        const decodedParam = decodeURIComponent(targetSlug).trim();
+        const byId = await getProductById(decodedParam);
+        if (isMounted && byId) {
+          applyProduct(byId);
+          setLoading(false);
+          return;
+        }
+        const bySlug = await getProductBySlug(decodedParam);
+        if (isMounted && bySlug) {
+          applyProduct(bySlug);
+          setLoading(false);
+        }
+      } catch (e) {
+        console.error("Direct product fetch fallback:", e);
+      }
+    };
+    fetchDirect();
+
+    // 2. Realtime subscription for live updates
+    const unsubscribe = subscribeToProducts((allProducts) => {
+      if (!isMounted) return;
+      const decodedParam = decodeURIComponent(targetSlug).toLowerCase().trim();
+      const matched =
+        allProducts.find((p) => p.id === targetSlug) ||
+        allProducts.find((p) => (p.slug || "").toLowerCase().trim() === decodedParam) ||
+        allProducts.find((p) => (p.name || "").toLowerCase().trim() === decodedParam) ||
+        allProducts.find(
+          (p) =>
+            (p.slug || "").toLowerCase().includes(decodedParam) ||
+            (p.name || "").toLowerCase().includes(decodedParam)
+        );
+
+      if (matched) {
+        applyProduct(matched);
+        // GA4: fire view_item once product data is resolved
+        gtag.viewItem({
+          item_id: matched.id,
+          item_name: matched.name,
+          item_category: matched.category || "ملابس",
+          price: matched.salePrice ?? matched.price ?? 0,
+          quantity: 1,
+        });
+      }
+      setLoading(false);
+    });
+
+    // 3. Safety timeout so modal never hangs in loading state
+    const timer = setTimeout(() => {
+      if (isMounted) setLoading(false);
+    }, 3500);
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+      clearTimeout(timer);
+    };
+  }, [targetSlug, onClose, applyProduct]);
+
+  const hasVariants = Boolean(product?.variants && product.variants.length > 0);
+  const activeVariant = hasVariants && product?.variants
+    ? product.variants.find((v) => v.colorHex === selectedColor?.hex) || product.variants[0]
+    : null;
+
+  const galleryImages = Array.from(
+    new Set(
+      [
+        ...(activeVariant?.images || []),
+        activeVariant?.image,
+        product?.mainImage,
+        product?.hoverImage,
+        ...(product?.images || []),
+        ...(product?.variants?.flatMap((v) => [v.image, ...(v.images || [])]) || []),
+      ].filter(Boolean) as string[]
+    )
+  );
+  if (galleryImages.length === 0) {
+    galleryImages.push("/placeholder.jpg");
+  }
+
+  // Auto-slideshow every 5 seconds if active color/product has multiple images
+  useEffect(() => {
+    if (galleryImages.length <= 1) return;
+
+    const interval = setInterval(() => {
+      setActiveImage((prev) => (prev + 1) % galleryImages.length);
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [galleryImages.length, activeImage]);
+
+  const handleClose = () => {
+    if (onClose) {
+      onClose();
+      return;
+    }
+    if (typeof window !== "undefined" && window.history.length > 2) {
+      router.back();
+    } else {
+      const savedReferrer = typeof window !== "undefined" ? sessionStorage.getItem("luno_referrer") : null;
+      if (savedReferrer && savedReferrer !== window.location.pathname) {
+        router.push(savedReferrer, { scroll: false });
+      } else {
+        router.push("/", { scroll: false });
+      }
+    }
+  };
+
+  const handleNextImage = () => {
+    if (galleryImages.length > 1) {
+      setActiveImage((prev) => (prev + 1) % galleryImages.length);
+    }
+  };
+
+  const displayPrice = product?.salePrice ?? product?.price ?? 0;
+  const hasDiscount = Boolean(product?.salePrice && product?.price && product.salePrice < product.price);
+  const discountPct = hasDiscount && product
+    ? getDiscountPercentage(product.price, product.salePrice!)
+    : 0;
+
+  const inWishlist = product ? isInWishlist(product.id) : false;
+  const availableSizes = activeVariant?.sizes || [];
+  const sizeStock = hasVariants
+    ? activeVariant?.sizes?.find((s) => s.size === selectedSize)?.stock ?? 99
+    : 99;
+
+  const sizeChartImg = product?.sizeChartUrl || (product?.sizeChartType === "pants" ? "/size-chart-pants.png" : product?.sizeChartType === "tshirt" ? "/size-chart-tshirt.png" : null);
+
+  const handleColorSelect = (variant: ProductVariant) => {
+    setSelectedColor({
+      name: variant.colorName || "افتراضي",
+      hex: variant.colorHex || "#000000",
+      image: variant.image || product?.mainImage || "",
+    });
+    const firstInStock =
+      variant.sizes?.find((s) => s.stock > 0)?.size || variant.sizes?.[0]?.size || "قياسي";
+    setSelectedSize(firstInStock);
+    setActiveImage(0);
+    setQuantity(1);
+  };
+
+  const handleAddToCart = async () => {
+    if (!product) return;
+    const finalSize = selectedSize || "قياسي";
+    const finalColor = selectedColor || {
+      name: "افتراضي",
+      hex: "#000000",
+      image: product.mainImage || "",
+    };
+
+    if (sizeStock === 0) {
+      toast.error("هذا المقاس غير متوفر حالياً");
+      return;
+    }
+    setAdding(true);
+    addItem(product, quantity, finalSize, finalColor);
+    // GA4: add_to_cart
+    gtag.addToCart({
+      item_id: product.id,
+      item_name: product.name,
+      item_category: product.category || "ملابس",
+      item_variant: `${finalSize} / ${finalColor.name}`,
+      price: product.salePrice ?? product.price ?? 0,
+      quantity,
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    setAdding(false);
+
+    const newTotalItems = totalItems + quantity;
+    if (bundleEnabled && discountPerBundle > 0) {
+      if (newTotalItems % bundleQty === 0) {
+        const saved = (newTotalItems / bundleQty) * discountPerBundle;
+        toast.success(`تمت الإضافة للسلة! 🎉 مبروك، تم تطبيق خصم العرض وفرت ${formatPrice(saved)}!`, { duration: 4000 });
+      } else {
+        const remaining = bundleQty - (newTotalItems % bundleQty);
+        toast.success(
+          `تمت الإضافة للسلة! 🔥 ضيف ${remaining === 1 ? "قطعة كمان" : `${remaining} قطع`} واستفد من خصم ${formatPrice(discountPerBundle)}!`,
+          { duration: 4000 }
+        );
+      }
+    } else {
+      toast.success(`تمت إضافة ${product.name} إلى السلة بنجاح!`);
+    }
+
+    openCart();
+  };
+
+  return (
+    <div className="pt-2 sm:pt-4 pb-20 min-h-screen relative bg-white dark:bg-zinc-950 text-zinc-900 dark:text-white">
+      {/* ── TOP STICKY PRODUCT HEADER BAR (ALWAYS VISIBLE IN ALL STATES) ── */}
+      <header className="sticky top-0 left-0 right-0 z-30 bg-white/90 dark:bg-zinc-950/90 backdrop-blur-md border-b border-zinc-200/80 dark:border-zinc-800/80 px-4 sm:px-6 lg:px-8 py-3 transition-colors">
+        <div className="max-w-7xl mx-auto flex items-center justify-between relative">
+          {/* Left Side: Back to Shop */}
+          <div className="flex items-center gap-2 sm:gap-3 z-10">
+            <button
+              type="button"
+              onClick={handleClose}
+              className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-bold text-zinc-700 hover:text-black dark:text-zinc-300 dark:hover:text-white transition-colors cursor-pointer group py-1"
+            >
+              <ChevronLeft size={18} className="group-hover:-translate-x-0.5 transition-transform" />
+              <span>{t("products.backToShop")}</span>
+            </button>
+          </div>
+
+          {/* Exact Center: Toty Sport Brand Logo */}
+          <div
+            onClick={handleClose}
+            className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 cursor-pointer z-10 flex items-center justify-center"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/logo.png"
+              alt="Toty Sport Logo"
+              className="h-8 sm:h-9 w-auto object-contain rounded-lg hover:opacity-80 transition-opacity"
+            ></img>
+          </div>
+
+          {/* Right Side: Actions (Wishlist, Cart, Close X) */}
+          <div className="flex items-center gap-1.5 sm:gap-2.5 z-10">
+            {/* Wishlist Toggle */}
+            <button
+              type="button"
+              onClick={toggleWishlistDrawer}
+              className="relative p-2 rounded-xl text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+              title={t("wishlist.title")}
+            >
+              <Heart size={18} className={wishlist.length > 0 ? "fill-red-500 text-red-500" : ""} />
+              {wishlist.length > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-red-500 text-white text-[9px] font-black rounded-full flex items-center justify-center">
+                  {wishlist.length}
+                </span>
+              )}
+            </button>
+
+            {/* Cart Toggle */}
+            <button
+              type="button"
+              onClick={toggleCart}
+              className="relative p-2 rounded-xl text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+              title={t("cart.title")}
+            >
+              <ShoppingBag size={18} />
+              {totalItems > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-black text-white dark:bg-white dark:text-black text-[9px] font-black rounded-full flex items-center justify-center">
+                  {totalItems}
+                </span>
+              )}
+            </button>
+
+            {/* Close Modal (X) */}
+            <button
+              type="button"
+              onClick={handleClose}
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-zinc-100 dark:bg-zinc-900 text-zinc-600 dark:text-zinc-300 hover:text-black dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-zinc-800 border border-zinc-200/80 dark:border-zinc-800 flex items-center justify-center transition-all ml-0.5 shadow-sm hover:scale-105 active:scale-95 cursor-pointer"
+              title="Close"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* ── CONDITIONAL BODY STATES ── */}
+      {loading ? (
+        <div className="pt-24 min-h-[60vh] flex flex-col items-center justify-center gap-3">
+          <Spinner size="lg" />
+          <p className="text-xs text-zinc-400 font-medium">{t("products.loading")}</p>
+        </div>
+      ) : !product ? (
+        <div className="pt-24 min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
+          <h2 className="text-xl font-bold mb-2">{t("products.notFound")}</h2>
+          <p className="text-zinc-500 text-xs mb-6">{t("products.notFoundSub")}</p>
+          <button
+            type="button"
+            onClick={handleClose}
+            className="px-6 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl font-bold text-xs cursor-pointer hover:opacity-90 transition-opacity"
+          >
+            {t("products.backToShop")}
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-16">
+          <div className="space-y-3">
+            <div
+              onClick={handleNextImage}
+              className={`aspect-square relative overflow-hidden rounded-2xl bg-background border border-zinc-200/50 dark:border-zinc-800/40 select-none ${
+                galleryImages.length > 1 ? "cursor-pointer group" : ""
+              }`}
+            >
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={activeImage + (galleryImages[activeImage] || "")}
+                  className="absolute inset-0"
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 1.04 }}
+                  transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+                >
+                  <Image
+                    src={galleryImages[activeImage] || "/placeholder.jpg"}
+                    alt={product.name}
+                    fill
+                    quality={95}
+                    crossOrigin="anonymous"
+                    className="object-contain p-4 transition-transform duration-500 group-hover:scale-105"
+                    priority
+                  />
+                </motion.div>
+              </AnimatePresence>
+
+              {galleryImages.length > 1 && (
+                <>
+                  <span className="absolute bottom-3 right-3 z-20 text-[10px] font-bold bg-black/60 text-white dark:bg-white/20 backdrop-blur-md px-2.5 py-1 rounded-full pointer-events-none opacity-80 group-hover:opacity-100 transition-opacity shadow-sm">
+                    {activeImage + 1} / {galleryImages.length} (اضغط للتالي)
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveImage((i) =>
+                        i === 0 ? galleryImages.length - 1 : i - 1
+                      );
+                    }}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 w-8 h-8 bg-white/80 dark:bg-zinc-800/80 backdrop-blur rounded-full flex items-center justify-center hover:bg-white dark:hover:bg-zinc-700 transition-colors shadow-md z-20"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveImage((i) =>
+                        i === galleryImages.length - 1 ? 0 : i + 1
+                      );
+                    }}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 bg-white/80 dark:bg-zinc-800/80 backdrop-blur rounded-full flex items-center justify-center hover:bg-white dark:hover:bg-zinc-700 transition-colors shadow-md z-20"
+                  >
+                    <ChevronRight size={16} />
+                  </button>
+                </>
+              )}
+            </div>
+
+            {galleryImages.length > 1 && (
+              <div className="flex gap-2.5 overflow-x-auto pb-1">
+                {galleryImages.map((img, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setActiveImage(i)}
+                    className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${
+                      activeImage === i
+                        ? "border-black dark:border-white"
+                        : "border-gray-200 dark:border-zinc-800 hover:border-gray-400"
+                    }`}
+                  >
+                    <Image
+                      src={img}
+                      alt={`${product.name} ${i + 1}`}
+                      width={64}
+                      height={64}
+                      className="w-full h-full object-contain p-1.5 bg-zinc-100 dark:bg-zinc-900"
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col">
+            <div className="flex items-center gap-2 mb-2">
+              {product.bestSeller && (
+                <Badge variant="default">{t("products.bestSeller")}</Badge>
+              )}
+              {product.featured && (
+                <Badge variant="info">{t("products.new")}</Badge>
+              )}
+              {sizeStock <= 5 && sizeStock > 0 && (
+                <Badge variant="warning">{t("products.onlyLeft").replace("{count}", String(sizeStock))}</Badge>
+              )}
+              {sizeStock === 0 && (
+                <Badge variant="danger">{t("products.outOfStock")}</Badge>
+              )}
+            </div>
+
+            <div>
+              <p className="text-xs text-gray-500 font-medium mb-1">{product.brand}</p>
+              <h1 className="text-2xl md:text-3xl font-bold tracking-tight mb-3">
+                {product.name}
+              </h1>
+            </div>
+
+            <div className="flex items-center gap-3 mb-4">
+              <span className="text-2xl font-bold">
+                {formatPrice(displayPrice)}
+              </span>
+              {hasDiscount && (
+                <>
+                  <span className="text-lg text-gray-400 line-through">
+                    {formatPrice(product.price)}
+                  </span>
+                  <span className="bg-red-100 text-red-600 text-xs font-bold px-2 py-0.5 rounded-full">
+                    -{discountPct}%
+                  </span>
+                </>
+              )}
+            </div>
+
+            <p className="text-xs md:text-sm text-gray-600 dark:text-gray-300 leading-relaxed mb-6">
+              {product.description || t("products.defaultDesc")}
+            </p>
+
+            {product.variants.length > 0 && (
+              <div className="mb-5">
+                <p className="text-xs font-semibold mb-2">
+                  {t("products.color")}:{" "}
+                  <span className="font-normal text-gray-500">
+                    {selectedColor?.name}
+                  </span>
+                </p>
+                <div className="flex gap-2">
+                  {product.variants.map((variant) => (
+                    <button
+                      key={variant.colorHex}
+                      onClick={() => handleColorSelect(variant)}
+                      title={variant.colorName}
+                      className={`w-7 h-7 rounded-full border-2 border-black dark:border-white transition-all shadow-sm ${
+                        selectedColor?.hex === variant.colorHex
+                          ? "ring-2 ring-amber-500 dark:ring-amber-400 scale-110 z-10"
+                          : "opacity-75 hover:opacity-100 hover:scale-105"
+                      }`}
+                      style={{ backgroundColor: variant.colorHex }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {availableSizes.length > 0 && (
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold">
+                    {t("products.size")}:{" "}
+                    <span className="font-normal text-gray-500">
+                      {selectedSize}
+                    </span>
+                  </p>
+                  {sizeChartImg && (
+                    <button
+                      type="button"
+                      onClick={() => setShowSizeGuide(true)}
+                      className="flex items-center gap-1.5 text-xs font-bold text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 transition-colors cursor-pointer bg-amber-50 dark:bg-amber-950/40 px-2.5 py-1 rounded-full border border-amber-200 dark:border-amber-800/60"
+                    >
+                      <span>📏 {t("products.sizeGuide")}</span>
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {availableSizes.map((sizeStockItem) => {
+                    const isOutOfStock = sizeStockItem.stock === 0;
+                    return (
+                      <button
+                        key={sizeStockItem.size}
+                        disabled={isOutOfStock}
+                        onClick={() => setSelectedSize(sizeStockItem.size)}
+                        className={`min-w-[36px] px-2.5 py-1 rounded-lg border text-xs font-semibold transition-all ${
+                          isOutOfStock
+                            ? "bg-gray-100 text-gray-400 border-gray-100 cursor-not-allowed line-through"
+                            : selectedSize === sizeStockItem.size
+                            ? "bg-black text-white border-black dark:bg-white dark:text-black dark:border-white"
+                            : "bg-white text-gray-700 border-gray-200 hover:border-gray-900 dark:bg-zinc-900 dark:text-gray-300 dark:border-zinc-800"
+                        }`}
+                      >
+                        {sizeStockItem.size}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-3">
+              <div className="flex items-center border border-gray-200 dark:border-zinc-800 rounded-lg overflow-hidden h-10">
+                <button
+                  onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+                  className="w-9 h-full flex items-center justify-center text-gray-500 hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+                >
+                  <Minus size={14} />
+                </button>
+                <span className="w-10 text-center font-bold text-xs">
+                  {quantity}
+                </span>
+                <button
+                  onClick={() => setQuantity((q) => Math.min(sizeStock, q + 1))}
+                  className="w-9 h-full flex items-center justify-center text-gray-500 hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleAddToCart}
+                disabled={adding || sizeStock === 0}
+                className="flex-1 h-10 bg-black text-white dark:bg-white dark:text-black rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-all shadow-md active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+              >
+                {adding ? (
+                  <Spinner size="sm" className="border-white dark:border-black border-t-transparent" />
+                ) : (
+                  <>
+                    <ShoppingBag size={16} />
+                    <span>{t("products.addToCart")}</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  toggleWishlist(product);
+                  // GA4: add_to_wishlist (only when adding, not removing)
+                  if (!inWishlist) {
+                    gtag.addToWishlist({
+                      item_id: product.id,
+                      item_name: product.name,
+                      item_category: product.category || "ملابس",
+                      price: product.salePrice ?? product.price ?? 0,
+                      quantity: 1,
+                    });
+                  }
+                }}
+                className={`w-10 h-10 rounded-lg border flex items-center justify-center transition-all cursor-pointer ${
+                  inWishlist
+                    ? "bg-red-50 text-red-500 border-red-200"
+                    : "border-gray-200 dark:border-zinc-800 text-gray-600 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                }`}
+                title={inWishlist ? t("wishlist.remove") : t("wishlist.add")}
+              >
+                <Heart size={16} fill={inWishlist ? "currentColor" : "none"} />
+              </button>
+            </div>
+
+            {sizeStock > 0 && (
+              <p className="text-xs text-gray-400 mt-3">
+                {sizeStock} {t("products.itemsAvailable")}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {showSizeGuide && (
+          <div className="fixed inset-0 bg-black/75 backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ type: "spring", damping: 25, stiffness: 350 }}
+              className="bg-zinc-950 text-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-zinc-800 relative overflow-hidden"
+              dir={language === "ar" ? "rtl" : "ltr"}
+            >
+              <div className="flex items-center justify-between mb-4 border-b border-zinc-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">📏</span>
+                  <h3 className="font-black text-sm uppercase tracking-wider text-white">
+                    {t("products.sizeGuideTitle")} {product.name}
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setShowSizeGuide(false)}
+                  className="w-8 h-8 rounded-full bg-zinc-900 flex items-center justify-center hover:bg-zinc-800 text-zinc-400 hover:text-white transition-all border border-zinc-800 cursor-pointer"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="flex justify-center p-2 bg-black rounded-2xl border border-zinc-800/80 overflow-hidden shadow-inner">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={sizeChartImg || "/size-chart-tshirt.png"}
+                  alt={`${product.name} Size Guide`}
+                  className="w-full max-h-[70vh] object-contain rounded-xl"
+                />
+              </div>
+
+              <p className="text-[11px] text-zinc-400 text-center mt-3 font-medium">
+                {t("products.sizeGuideNote")}
+              </p>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+        </>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,305 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { motion } from "framer-motion";
+import {
+  ShoppingCart,
+  Package,
+  TrendingUp,
+  ArrowRight,
+  Clock,
+  ChevronRight,
+  Plus,
+  Activity,
+  Megaphone,
+} from "lucide-react";
+import { getOrders, getProducts, subscribeToVisitorSessions } from "@/lib/firebase/firestore";
+import { formatPrice, formatDate } from "@/lib/utils";
+import type { Order } from "@/types/order";
+import { Spinner } from "@/components/ui/Spinner";
+
+interface Stats {
+  totalOrders: number;
+  totalRevenue: number;
+  totalProducts: number;
+  pendingOrders: number;
+}
+
+const statusDots: Record<string, string> = {
+  pending: "bg-amber-500",
+  processing: "bg-blue-500",
+  shipped: "bg-indigo-500",
+  delivered: "bg-green-500",
+  cancelled: "bg-red-500",
+};
+
+export default function AdminDashboardPage() {
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [recentOrders, setRecentOrders] = useState<Order[]>([]);
+  const [liveVisitors, setLiveVisitors] = useState<number>(0);
+  const [campaignsCount, setCampaignsCount] = useState<number>(0);
+  const [abandonedCheckoutCount, setAbandonedCheckoutCount] = useState<number>(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsubVisitors = subscribeToVisitorSessions((summary) => {
+      setLiveVisitors(summary.liveCount);
+      setCampaignsCount(summary.campaigns.length);
+      setAbandonedCheckoutCount(summary.checkoutAbandonment.abandonedCount);
+    });
+
+    Promise.all([getOrders(), getProducts()])
+      .then(([orders, products]) => {
+        const totalRevenue = orders
+          .filter((o) => o.status !== "cancelled")
+          .reduce((sum, o) => sum + o.total, 0);
+
+        setStats({
+          totalOrders: orders.length,
+          totalRevenue,
+          totalProducts: products.length,
+          pendingOrders: orders.filter((o) => o.status === "pending").length,
+        });
+        setRecentOrders(orders.slice(0, 5));
+      })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+
+    return () => unsubVisitors();
+  }, []);
+
+  const statCards = [
+    {
+      title: "إجمالي المبيعات",
+      value: formatPrice(stats?.totalRevenue ?? 0),
+      icon: TrendingUp,
+      href: "/admin/orders",
+      progress: "85%",
+      desc: "إجمالي أرباح المبيعات (المؤكدة والمشحونة)",
+    },
+    {
+      title: "إجمالي الطلبات",
+      value: stats?.totalOrders ?? 0,
+      icon: ShoppingCart,
+      href: "/admin/orders",
+      progress: "60%",
+      desc: "إجمالي الطلبات المسجلة في النظام",
+    },
+    {
+      title: "طلبات قيد الانتظار",
+      value: stats?.pendingOrders ?? 0,
+      icon: Clock,
+      href: "/admin/orders?status=pending",
+      progress: "35%",
+      desc: "بانتظار التأكيد والشحن",
+    },
+    {
+      title: "منتجات المتجر",
+      value: stats?.totalProducts ?? 0,
+      icon: Package,
+      href: "/admin/products",
+      progress: "100%",
+      desc: "عدد المنتجات النشطة بالمتجر",
+    },
+  ];
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-96 space-y-4">
+        <Spinner size="lg" />
+        <p className="text-xs text-zinc-400 font-medium uppercase tracking-widest">جارٍ تحميل الإحصائيات...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-8">
+      {/* Welcome header with action */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-black tracking-tight text-zinc-900">نظرة عامة</h1>
+          <p className="text-zinc-400 text-sm mt-1">
+            التحليلات المباشرة وعناصر التحكم الخاصة بمتجر LUNO Store.
+          </p>
+        </div>
+        <div className="flex gap-3">
+          <Link
+            href="/admin/analytics"
+            className="inline-flex items-center gap-2 bg-emerald-600 text-white px-5 py-3 rounded-xl font-bold text-xs hover:bg-emerald-700 transition-all duration-300 shadow-md shadow-emerald-600/20"
+          >
+            <Activity size={14} className="animate-pulse" />
+            <span>التحليلات والزوار ({liveVisitors} متواجد الآن)</span>
+          </Link>
+          <Link
+            href="/admin/products"
+            className="inline-flex items-center gap-2 bg-zinc-900 text-white px-5 py-3 rounded-xl font-bold text-xs hover:bg-zinc-800 transition-all duration-300 shadow-md shadow-zinc-900/10"
+          >
+            <Plus size={14} />
+            إدارة المنتجات
+          </Link>
+        </div>
+      </div>
+
+      {/* Analytics & Campaigns Fast Strip */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Link
+          href="/admin/campaigns"
+          className="flex items-center justify-between p-4 bg-gradient-to-r from-blue-50 via-cyan-50 to-sky-50 dark:from-blue-950/40 dark:via-cyan-950/30 dark:to-sky-950/40 border border-blue-200/80 dark:border-blue-800/60 rounded-2xl hover:border-blue-400 dark:hover:border-blue-600 transition-all group shadow-sm"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 text-white flex items-center justify-center font-bold shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform">
+              <Megaphone size={18} />
+            </div>
+            <div>
+              <span className="text-xs font-black text-blue-950 dark:text-blue-100 block">منظومة الحملات الإعلانية</span>
+              <span className="text-[11px] text-blue-700 dark:text-blue-300 font-medium">
+                {campaignsCount > 0
+                  ? `${campaignsCount} حملة إعلانية نشطة تسجل نقرات على المنتجات`
+                  : "إدارة الحملات والروابط المختصرة ومتابعة المبيعات"}
+              </span>
+            </div>
+          </div>
+          <ArrowRight size={16} className="text-blue-600 dark:text-blue-400 group-hover:-translate-x-1 transition-transform" />
+        </Link>
+
+        <Link
+          href="/admin/analytics"
+          className="flex items-center justify-between p-4 bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200/80 rounded-2xl hover:border-purple-400 transition-all group"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-purple-600 text-white flex items-center justify-center font-bold shadow-sm">
+              <ShoppingCart size={18} />
+            </div>
+            <div>
+              <span className="text-xs font-bold text-purple-900 block">التخلي عن الشيك أوت</span>
+              <span className="text-[11px] text-purple-700 font-medium">
+                {abandonedCheckoutCount > 0
+                  ? `${abandonedCheckoutCount} زائر وصلوا لصفحة الدفع ولم يكملوا الطلب`
+                  : "متابعة مسار الدفع ومعدلات إتمام الشراء"}
+              </span>
+            </div>
+          </div>
+          <ArrowRight size={16} className="text-purple-700 group-hover:-translate-x-1 transition-transform" />
+        </Link>
+      </div>
+
+      {/* Stats Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        {statCards.map((card, i) => {
+          const Icon = card.icon;
+          return (
+            <motion.div
+              key={card.title}
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.08, duration: 0.4 }}
+            >
+              <Link
+                href={card.href}
+                className="block bg-white rounded-2xl p-6 border border-zinc-100/80 shadow-[0_8px_30px_rgba(0,0,0,0.015)] hover:border-zinc-300 hover:shadow-[0_8px_30px_rgba(0,0,0,0.03)] transition-all duration-300 group"
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-xs tracking-wider text-zinc-400 font-bold">
+                    {card.title}
+                  </span>
+                  <div className="w-8 h-8 rounded-lg bg-zinc-50 flex items-center justify-center text-zinc-500 group-hover:bg-zinc-900 group-hover:text-white transition-all duration-300">
+                    <Icon size={14} />
+                  </div>
+                </div>
+                <h3 className="text-2xl font-black text-zinc-900 tracking-tight mb-1">{card.value}</h3>
+                <p className="text-[11px] text-zinc-400 font-medium">{card.desc}</p>
+                
+                {/* Clean Micro progress bar */}
+                <div className="w-full h-1 bg-zinc-50 rounded-full mt-5 overflow-hidden">
+                  <div 
+                    className="bg-zinc-900 h-full rounded-full transition-all duration-500" 
+                    style={{ width: card.progress }}
+                  />
+                </div>
+              </Link>
+            </motion.div>
+          );
+        })}
+      </div>
+
+      {/* Recent Orders section */}
+      <div className="bg-white rounded-2xl border border-zinc-100/80 shadow-[0_8px_30px_rgba(0,0,0,0.015)] overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-zinc-100">
+          <div>
+            <h2 className="font-black text-sm text-zinc-900 tracking-widest">أحدث الطلبات</h2>
+            <p className="text-zinc-400 text-xs mt-0.5">عرض أحدث الطلبات المسجلة في قاعدة البيانات</p>
+          </div>
+          <Link
+            href="/admin/orders"
+            className="text-xs font-bold text-zinc-400 hover:text-zinc-900 transition-colors flex items-center gap-1 group"
+          >
+            عرض كل الطلبات
+            <ArrowRight size={12} className="group-hover:translate-x-0.5 transition-transform" />
+          </Link>
+        </div>
+
+        {recentOrders.length === 0 ? (
+          <div className="px-6 py-16 text-center text-zinc-400 text-xs font-medium">
+            لا توجد طلبات مسجلة في النظام حتى الآن.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-zinc-50/50 border-b border-zinc-100 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+                  <th className="px-6 py-4 text-right">رقم الطلب</th>
+                  <th className="px-6 py-4 text-right">العميل</th>
+                  <th className="px-6 py-4 text-right">التاريخ</th>
+                  <th className="px-6 py-4 text-right">الإجمالي</th>
+                  <th className="px-6 py-4 text-right">حالة الطلب</th>
+                  <th className="px-6 py-4 text-left">إجراء</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-50">
+                {recentOrders.map((order) => (
+                  <tr key={order.id} className="hover:bg-zinc-50/40 transition-colors">
+                    <td className="px-6 py-4 text-xs font-mono text-zinc-500 font-medium">
+                      #{order.id.slice(0, 8).toUpperCase()}
+                    </td>
+                    <td className="px-6 py-4">
+                      <div>
+                        <p className="text-xs font-bold text-zinc-900">{order.customerName}</p>
+                        <p className="text-[10px] text-zinc-400 font-mono mt-0.5">{order.phone}</p>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-xs text-zinc-500 font-medium">
+                      {formatDate(
+                        order.createdAt instanceof Date
+                          ? order.createdAt
+                          : (order.createdAt as { toDate(): Date }).toDate()
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-xs font-black text-zinc-900">
+                      {formatPrice(order.total)}
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-1.5 font-bold text-xs text-zinc-800 capitalize">
+                        <span className={`w-1.5 h-1.5 rounded-full ${statusDots[order.status] || "bg-zinc-300"}`} />
+                        {order.status === "pending" ? "في الانتظار" : order.status === "confirmed" ? "مؤكد" : order.status === "shipping" ? "جارٍ الشحن" : order.status === "delivered" ? "تم التسليم" : "ملغي"}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-left">
+                      <Link
+                        href={`/admin/orders?id=${order.id}`}
+                        className="inline-flex items-center gap-1 text-[10px] font-bold bg-zinc-50 text-zinc-700 hover:bg-zinc-900 hover:text-white px-3 py-1.5 rounded-lg transition-all duration-300"
+                      >
+                        إدارة
+                        <ChevronRight size={10} />
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

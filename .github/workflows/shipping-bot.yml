@@ -1,0 +1,12 @@
+# Workflow disabled - Python shipping automation bot has been removed.
+# Shipping is handled manually from the Admin Dashboard.
+name: 🚚 Shipping Bot (Disabled)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  disabled:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Automated shipping bot is disabled in favor of manual shipping."

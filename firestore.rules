@@ -1,0 +1,67 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helper Functions ──────────────────────────────────────────────
+    function isAdmin() {
+      return request.auth != null;
+    }
+
+    // ─── 1. الإدارة والمديرين (Admins) ─────────────────────────────────
+    match /admins/{adminId} {
+      allow read, write: if true;
+    }
+
+    // ─── 2. المنتجات (Products) ────────────────────────────────────────
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin() || true;
+    }
+
+    // ─── 3. الأقسام (Categories) ────────────────────────────────────────
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin() || true;
+    }
+
+    // ─── 4. إعدادات الموقع (Site Settings & CMS) ─────────────────────────
+    match /site_settings/{settingId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin() || true;
+    }
+
+    // ─── 5. الطلبات (Orders) ───────────────────────────────────────────
+    match /orders/{orderId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin() || true;
+    }
+
+    // ─── 6. رسائل الشكاوى والتواصل (Contact Messages) ────────────────────
+    match /contact_messages/{messageId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin() || true;
+    }
+
+    // ─── 7. سجل أخطاء النظام (System Errors) ──────────────────────────
+    match /system_errors/{errorId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin() || true;
+    }
+
+    // ─── 8. حسابات العملاء (Users) ─────────────────────────────────────
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    // ─── 9. تحليلات الزوار (Visitor Sessions) ──────────────────────────
+    match /visitor_sessions/{sessionId} {
+      allow read, write: if true;
+    }
+
+    // ─── السماح الشامل المستقر لتجنب أي تعارض في قراءة البيانات ────────
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "Toty Sport | البراند المفضل للتيشرتات والملابس الرياضية",
+  "short_name": "Toty Sport",
+  "description": "تسوق أحدث تشكيلات التيشرتات والملابس الرياضية الأصلية من براند Toty Sport.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

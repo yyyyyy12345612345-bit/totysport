@@ -1,0 +1,150 @@
+import { type ClassValue, clsx } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+/**
+ * Safely parses any number or string, converting Eastern Arabic numerals (٠-٩) to Western (0-9).
+ */
+export function parseArabicNumber(val: unknown): number {
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  if (!val && val !== 0) return 0;
+  const str = String(val)
+    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))
+    .trim();
+  const num = parseFloat(str);
+  return isNaN(num) ? 0 : num;
+}
+
+export function formatPrice(price: number, currency = "EGP", locale?: string): string {
+  const formattedNumber = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(price || 0);
+
+  if (locale === "en" || (typeof document !== "undefined" && document.documentElement.lang === "en")) {
+    return `${formattedNumber} EGP`;
+  }
+  return `${formattedNumber} ج.م`;
+}
+
+export function generateSlug(name: string): string {
+  if (!name) return `product-${Date.now().toString(36)}`;
+  
+  // Keep English alphanumeric, Arabic letters, spaces, hyphens
+  const cleaned = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s\u0600-\u06FF-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-");
+
+  if (!cleaned || cleaned === "-") {
+    return `product-${Date.now().toString(36)}`;
+  }
+  return cleaned;
+}
+
+export function truncateText(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength) + "...";
+}
+
+export function getDiscountPercentage(price: number, salePrice: number): number {
+  return Math.round(((price - salePrice) / price) * 100);
+}
+
+export function formatDate(date: Date | { toDate(): Date }): string {
+  const d = date instanceof Date ? date : date.toDate();
+  return new Intl.DateTimeFormat("en-EG", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(d);
+}
+
+/** Generates a unique product SKU like TOTY-A4K2 */
+export function generateSKU(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 4; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return `TOTY-${code}`;
+}
+
+/** Generates Design 1 WhatsApp Order Confirmation message with 1/2 options */
+export function buildWhatsAppConfirmationMessage(
+  order: {
+    id: string;
+    customerName: string;
+    phone: string;
+    governorate?: string;
+    city: string;
+    address: string;
+    items: Array<{
+      productName: string;
+      quantity: number;
+      price: number;
+      selectedSize?: string;
+      selectedColor?: { name: string };
+    }>;
+    subtotal?: number;
+    shippingCost?: number;
+    bundleDiscount?: number;
+    total: number;
+  },
+  storeName = "Toty Sport"
+): string {
+  const shortId = order.id.slice(0, 8).toUpperCase();
+  const itemsText = order.items
+    .map(
+      (item) =>
+        `- ${item.productName}${item.selectedSize ? ` (${item.selectedSize})` : ""}${
+          item.selectedColor?.name ? ` - ${item.selectedColor.name}` : ""
+        } (الكمية: ${item.quantity}) - ${formatPrice(item.price * item.quantity)}`
+    )
+    .join("\n");
+
+  const fullAddress = [order.governorate, order.city, order.address]
+    .filter(Boolean)
+    .join(" - ");
+
+  const subtotalText = order.subtotal ? formatPrice(order.subtotal) : formatPrice(order.total);
+  const discountLine = order.bundleDiscount ? `- خصم العرض: -${formatPrice(order.bundleDiscount)}\n` : "";
+  const shippingText =
+    order.shippingCost !== undefined ? formatPrice(order.shippingCost) : "حسب المحافظة";
+  const totalText = formatPrice(order.total);
+
+  return `مرحبا ${order.customerName}
+شكرا لطلبك من ${storeName}!
+
+تفاصيل طلبك:
+-----------------------------------
+رقم الطلب: #${shortId}
+
+المنتجات:
+${itemsText}
+
+بيانات التوصيل:
+- الاسم: ${order.customerName}
+- الهاتف: ${order.phone}
+- العنوان: ${fullAddress}
+
+الفاتورة:
+- مجموع المنتجات: ${subtotalText}
+${discountLine}- مصاريف الشحن: ${shippingText}
+- الاجمالي النهائي: ${totalText}
+-----------------------------------
+
+لتجهيز طلبك وتسليمه لشركة الشحن فورا، نرجو تأكيد الطلب:
+
+(1) تأكيد الطلب - للبدء في التغليف والشحن
+(2) الغاء الطلب
+
+من فضلك أرسل الرقم (1) للتأكيد أو (2) للالغاء.`;
+}
+
