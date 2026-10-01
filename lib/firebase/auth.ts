@@ -39,6 +39,7 @@ export async function signInAdmin(
     return masterUser;
   }
 
+  if (!auth) throw new Error("Firebase Auth is not initialized. Check your credentials.");
   try {
     const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
     
@@ -53,8 +54,8 @@ export async function signInAdmin(
     }
 
     // Check if user is in admins collection
-    const adminDoc = await getDoc(doc(db, "admins", credential.user.uid));
-    if (!adminDoc.exists()) {
+    const adminDoc = db ? await getDoc(doc(db, "admins", credential.user.uid)) : null;
+    if (!adminDoc || !adminDoc.exists()) {
       await firebaseSignOut(auth);
       throw new Error("Access denied. Not an admin account.");
     }
@@ -74,10 +75,11 @@ export async function signInAdmin(
     ) {
       try {
         // Automatically create the primary admin account
+        if (!auth) throw new Error("Firebase Auth not initialized");
         const newCredential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
         
         // Save to admins collection in Firestore
-        await setDoc(
+        if (db) await setDoc(
           doc(db, "admins", newCredential.user.uid),
           {
             email: cleanEmail,
@@ -106,15 +108,16 @@ export async function signOut(): Promise<void> {
   if (typeof window !== "undefined") {
     localStorage.removeItem("toty_admin_session");
   }
-  await firebaseSignOut(auth);
+  if (auth) await firebaseSignOut(auth);
 }
 
 export async function isAdmin(uid: string): Promise<boolean> {
   const primaryAdminEmail = (process.env.NEXT_PUBLIC_ADMIN_EMAIL || "admin@totysport.com").toLowerCase();
   // If the user's email matches the primary admin email
-  if (auth.currentUser?.email?.toLowerCase() === primaryAdminEmail || auth.currentUser?.email?.toLowerCase() === "totysport@gmail.com") {
+  if (auth?.currentUser?.email?.toLowerCase() === primaryAdminEmail || auth?.currentUser?.email?.toLowerCase() === "totysport@gmail.com") {
     return true;
   }
+  if (!db) return false;
   const adminDoc = await getDoc(doc(db, "admins", uid));
   return adminDoc.exists();
 }

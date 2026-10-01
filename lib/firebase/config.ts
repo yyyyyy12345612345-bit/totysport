@@ -1,7 +1,7 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { initializeFirestore, getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
+import { getAuth, Auth } from "firebase/auth";
+import { initializeFirestore, getFirestore, Firestore } from "firebase/firestore";
+import { getStorage, FirebaseStorage } from "firebase/storage";
 
 export const isFirebaseConfigured = Boolean(
   process.env.NEXT_PUBLIC_FIREBASE_API_KEY &&
@@ -18,29 +18,38 @@ const firebaseConfig = {
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || "",
 };
 
-let app: FirebaseApp;
+// All initialization wrapped in try/catch — prevents build-time crashes
+// when API key is invalid/dummy. Firebase validates keys synchronously.
+let app: FirebaseApp | null = null;
+let auth: Auth | null = null;
+let db: Firestore | null = null;
+let storage: FirebaseStorage | null = null;
+
 try {
   app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+
+  try { auth = getAuth(app); } catch (e) {
+    console.warn("[Firebase] Auth init skipped:", (e as Error).message);
+  }
+
+  try {
+    db = initializeFirestore(app, {
+      experimentalForceLongPolling: true,
+      ignoreUndefinedProperties: true,
+    });
+  } catch {
+    try { db = getFirestore(app); } catch (e) {
+      console.warn("[Firebase] Firestore init skipped:", (e as Error).message);
+    }
+  }
+
+  try { storage = getStorage(app); } catch (e) {
+    console.warn("[Firebase] Storage init skipped:", (e as Error).message);
+  }
+
 } catch (e) {
-  console.warn("[Firebase] init error:", e);
-  // Fallback to prevent crash
-  app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig, "backup");
+  console.warn("[Firebase] App init skipped:", (e as Error).message);
 }
 
-export const auth = getAuth(app);
-
-let dbInstance;
-try {
-  dbInstance = initializeFirestore(app, {
-    experimentalForceLongPolling: true,
-    ignoreUndefinedProperties: true,
-  });
-} catch {
-  dbInstance = getFirestore(app);
-}
-
-export const db = dbInstance;
-export const storage = getStorage(app);
-
+export { auth, db, storage };
 export default app;
-
